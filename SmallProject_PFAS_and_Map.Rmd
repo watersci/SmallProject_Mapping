@@ -1,0 +1,53 @@
+---
+title: "PFAS Data and Map"
+author: "TJM"
+date: "2025-02-24"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+First let's download all the available data from USGS
+```{r}
+library(dataRetrieval)
+library(dplyr)
+
+# Filter parameterCdFile for PFAS-related terms
+pfas_parameters <- parameterCdFile[grep("perfluoro|polyfluoro|PFAS", parameterCdFile$parameter_nm, ignore.case = TRUE), ]
+pfas_parameters <- pfas_parameters %>%
+  filter(parameter_units == "ng/l" & grepl("PFOA", parameter_nm, ignore.case = TRUE))
+  
+# let's use the generic entry for PFOA
+characteristic = pcode_to_name(pfas_parameters$parameter_cd[1])
+characteristic = characteristic$characteristicname
+rm(pfas_parameters)
+
+# Retrieve PFAS data from Water Quality Portal
+pfas_data <- readWQPdata(statecode = "US:42", characteristicName = characteristic) # "US:42" is the state code for PA (change for other states)
+rm(characteristic)
+
+# Let's trim this to only surface water
+pfas_data <- pfas_data %>%
+  filter(ActivityMediaSubdivisionName == "Surface Water")
+
+# We only need a few cols; date, location, result, and detection limit
+pfas_data <- pfas_data %>%
+  select(ActivityStartDate,MonitoringLocationIdentifier,ResultMeasureValue,DetectionQuantitationLimitMeasure.MeasureValue) 
+
+# Let's use easier col names
+colnames(pfas_data) = c("date","loc","PFOA","PFOA_dl")
+
+# Remove "USGS-" prefix
+pfas_data <- pfas_data %>%
+  mutate(loc = sub("USGS-", "", loc))
+
+# Retrieve site information (including latitude & longitude)
+site_info <- readNWISsite(pfas_data$loc)
+
+# Select only relevant columns
+site_info <- site_info %>%
+  select(site_no, station_nm, dec_lat_va, dec_long_va)
+
+```
+
