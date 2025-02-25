@@ -7,47 +7,75 @@ editor_options:
   chunk_output_type: console
 ---
 
-
-First let's download all the available data from USGS
+Load the packages
 ```{r}
 library(dataRetrieval)
+library(leaflet)
 library(dplyr)
-
-# Filter parameterCdFile for PFAS-related terms
-pfas_parameters <- parameterCdFile[grep("perfluoro|polyfluoro|PFAS", parameterCdFile$parameter_nm, ignore.case = TRUE), ]
-pfas_parameters <- pfas_parameters %>%
-  filter(parameter_units == "ng/l" & grepl("PFOA", parameter_nm, ignore.case = TRUE))
-  
-# let's use the generic entry for PFOA
-characteristic = pcode_to_name(pfas_parameters$parameter_cd[1])
-characteristic = characteristic$characteristicname
-rm(pfas_parameters)
-
-# Retrieve PFAS data from Water Quality Portal
-pfas_data <- readWQPdata(statecode = "US:42", characteristicName = characteristic) # "US:42" is the state code for PA (change for other states)
-rm(characteristic)
-
-# Let's trim this to only surface water
-pfas_data <- pfas_data %>%
-  filter(ActivityMediaSubdivisionName == "Surface Water")
-
-# We only need a few cols; date, location, result, and detection limit
-pfas_data <- pfas_data %>%
-  select(ActivityStartDate,MonitoringLocationIdentifier,ResultMeasureValue,DetectionQuantitationLimitMeasure.MeasureValue) 
-
-# Let's use easier col names
-colnames(pfas_data) = c("date","loc","PFOA","PFOA_dl")
-
-# Remove "USGS-" prefix
-pfas_data <- pfas_data %>%
-  mutate(loc = sub("USGS-", "", loc))
-
-# Retrieve site information (including latitude & longitude)
-site_info <- readNWISsite(pfas_data$loc)
-
-# Select only relevant columns
-site_info <- site_info %>%
-  select(site_no, station_nm, dec_lat_va, dec_long_va)
 
 ```
 
+First let's download all the available data from USGS
+```{r}
+
+# Filter parameterCdFile for PFOA-related parameters in ng/L
+pfas_parameters <- parameterCdFile %>%
+  filter(parameter_units == "ng/l" & grepl("PFOA", parameter_nm, ignore.case = TRUE))
+
+# There is a specific name for PFOA that we need to use for the download to work
+characteristic <- pcode_to_name(pfas_parameters$parameter_cd[1])$characteristicname
+
+# Retrieve PFOA data from Water Quality Portal for Pennsylvania (US:42)
+pfas_data <- readWQPdata(statecode = "US:42", characteristicName = characteristic)
+
+# Filter to only surface water samples
+pfas_data <- pfas_data %>%
+  filter(ActivityMediaSubdivisionName == "Surface Water") %>%
+  select(ActivityStartDate, MonitoringLocationIdentifier, ResultMeasureValue, DetectionQuantitationLimitMeasure.MeasureValue) %>%
+  rename(date = ActivityStartDate, loc = MonitoringLocationIdentifier, PFOA = ResultMeasureValue, PFOA_dl = DetectionQuantitationLimitMeasure.MeasureValue) %>%
+  mutate(loc = sub("USGS-", "", loc))  # Remove "USGS-" prefix for site codes
+
+# Retrieve site metadata (lat/long)
+site_info <- readNWISsite(unique(pfas_data$loc)) %>%
+  select(site_no, station_nm, dec_lat_va, dec_long_va) %>%
+  filter(!is.na(dec_lat_va) & !is.na(dec_long_va))  # Remove sites missing coordinates
+
+# Merge site metadata with PFAS data so that lat and lon are a col in our PFAS data
+pfas_data <- left_join(pfas_data, site_info, by = c("loc" = "site_no"))
+
+```
+
+
+```{r}
+# just for plotting purposes let's assign half the detection limit to the values that are BDL
+# this is just for plotting! Don't use this technique for statistical analysis, there are better ways!
+BDL_index = which(is.na(pfas_data$PFOA)==T)
+pfas_data$PFOA[BDL_index] = pfas_data$PFOA_dl[BDL_index]/2
+
+# Define a reversed Green-to-Red color scale
+pal <- colorNumeric(palette = "Reds", 
+                    domain = pfas_data$PFOA, 
+                    na.color = "gray")
+
+# Create the Leaflet map
+leaflet(data = pfas_data) %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%  # grey map
+  addCircleMarkers(
+    ~dec_long_va, ~dec_lat_va,  # lon/lat
+    radius = ~ifelse(is.na(PFOA), 3, 5 + (PFOA / max(PFOA, na.rm = TRUE)) * 10),  # Scale circle size based on PFOA level
+    color = ~pal(PFOA),  # Color based on PFOA levels
+    fillOpacity = 0.9,
+    popup = ~paste0( # this is where you can click on a site and the data will pop-up! how cool is that!
+      "<b>Site:</b> ", station_nm, "<br>",
+      "<b>PFOA:</b> ", round(PFOA, 2), " ng/L<br>",
+      "<b>Detection Limit:</b> ", round(PFOA_dl, 2), " ng/L"
+    )
+  ) %>%
+  addLegend("bottomright", pal = pal, values = ~PFOA,
+            title = "PFOA (ng/L)",
+            opacity = 1)
+
+
+
+
+```
